@@ -48,7 +48,9 @@ def sweep_features(sweep: pd.DataFrame) -> dict:
 def feature_table(master: pd.DataFrame) -> pd.DataFrame:
     """One row of features per sweep, carrying metadata columns along."""
     rows = []
-    for sid, grp in master.groupby("sample_id", sort=False):
+    # Group by file, not sample_id: one file == one sweep and filenames are unique,
+    # so two sweeps that happen to share a sample_id are never collapsed together.
+    for fname, grp in master.groupby("file", sort=False):
         meta = {c: grp[c].iloc[0] for c in META_COLS if c in grp.columns}
         meta.update(sweep_features(grp))
         rows.append(meta)

@@ -68,7 +68,8 @@ def overlay(master, out_path, value: str = "magnitude", by: str = "label"):
     _style()
     fig, ax = plt.subplots(figsize=(8, 5))
     seen = {}
-    for i, (sid, grp) in enumerate(master.groupby("sample_id", sort=False)):
+    # per-sweep = per-file (unique); sample_id may collide across files.
+    for i, (fname, grp) in enumerate(master.groupby("file", sort=False)):
         g = grp.sort_values("frequency_hz")
         cls = str(g[by].iloc[0])
         color = _color(cls, i)
