@@ -1,0 +1,11 @@
+data/raw/*.csv
+data/raw/manifest.csv
+data/out/*
+!data/raw/.gitkeep
+!data/out/.gitkeep
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
