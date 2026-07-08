@@ -45,12 +45,38 @@ def cmd_ingest(args):
     feats = eis.feature_table(master)
     master.to_csv(OUT / "master.csv", index=False)
     feats.to_csv(OUT / "features.csv", index=False)
-    n_sweeps = master["sample_id"].nunique()
+    n_sweeps = master["file"].nunique()
     print(f"ingested {n_sweeps} sweeps, {len(master)} rows")
     print(f"  {OUT/'master.csv'}")
     print(f"  {OUT/'features.csv'}")
     print("labels:", ", ".join(f"{k}×{v}" for k, v in
           feats["label"].value_counts().items()))
+    # QC gate: flag anything untrustworthy so a bad sweep is never used silently
+    qc = eis.qc_folder(RAW, gain_factor=args.gain_factor)
+    if not qc.empty:
+        errs = (qc["severity"] == "error").sum()
+        print(f"QC: {len(qc)} issue(s) across {qc['file'].nunique()} file(s), "
+              f"{errs} error(s) -- run `python cli.py qc` for detail")
+    else:
+        print("QC: all sweeps clean")
+
+
+def cmd_qc(args):
+    qc = eis.qc_folder(RAW, gain_factor=args.gain_factor)
+    if qc.empty:
+        print("all sweeps passed QC")
+        return
+    OUT.mkdir(parents=True, exist_ok=True)
+    qc.to_csv(OUT / "qc_report.csv", index=False)
+    print(qc.to_string(index=False))
+    print(f"\n{len(qc)} issue(s) -> {OUT/'qc_report.csv'}")
+
+
+def cmd_report(args):
+    master = _master(args.gain_factor)
+    qc = eis.qc_folder(RAW, gain_factor=args.gain_factor)
+    out = eis.build_report(master, OUT, qc=qc)
+    print("wrote", out)
 
 
 def cmd_plot(args):
@@ -107,7 +133,9 @@ def cmd_demo(args):
     print("\n== overlay =="); cmd_overlay(args)
     print("\n== noise =="); cmd_noise(args)
     print("\n== model =="); cmd_model(args)
-    print(f"\ndone. figures + tables in {OUT}")
+    print("\n== qc =="); cmd_qc(args)
+    print("\n== report =="); cmd_report(args)
+    print(f"\ndone. figures + tables + report in {OUT}")
 
 
 def main():
@@ -130,6 +158,8 @@ def main():
     sub.add_parser("overlay", help="overlay all sweeps").set_defaults(func=cmd_overlay)
     sub.add_parser("noise", help="repeatability / noise floor").set_defaults(func=cmd_noise)
     sub.add_parser("model", help="optional clean-vs-dirty model").set_defaults(func=cmd_model)
+    sub.add_parser("qc", help="quality-control check on sweeps").set_defaults(func=cmd_qc)
+    sub.add_parser("report", help="build the HTML summary report").set_defaults(func=cmd_report)
 
     s = sub.add_parser("demo", help="run everything end to end")
     s.add_argument("--repeats", type=int, default=3)

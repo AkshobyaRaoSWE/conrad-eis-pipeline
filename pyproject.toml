@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conrad-eis"
+version = "0.1.0"
+description = "EIS water-fingerprint pipeline (Conrad Challenge, software & data lane)"
+requires-python = ">=3.9"
+dependencies = ["numpy", "pandas", "matplotlib", "scikit-learn", "scipy"]
+
+[project.optional-dependencies]
+capture = ["pyserial"]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["eis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

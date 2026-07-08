@@ -23,9 +23,24 @@ Minimum columns: `frequency_hz,real,imag`. Everything else is derived or optiona
     python cli.py overlay        # overlay all sweeps + feature scatter (do samples separate?)
     python cli.py noise          # repeatability / noise floor (is the rig trustworthy?)
     python cli.py model          # optional clean-vs-dirty leave-one-out check
+    python cli.py qc             # quality control: flag flat/short/garbage sweeps
+    python cli.py report         # build data/out/report.html (dark, self-contained)
     python cli.py demo           # all of the above, end to end
 
 Add `--gain-factor <float>` to convert magnitude to ohms (see calibration in the format doc).
+
+## Capturing real sweeps from the ESP32
+
+Once firmware is flashed, grab a labeled sweep straight off serial (needs `pip install pyserial`):
+
+    python capture.py --list                                  # find the port
+    python capture.py --port /dev/tty.usbserial-XXXX --label yeast --conc med --rep 2
+
+It writes a format-correct CSV into `data/raw/`, ready for `cli.py ingest`.
+
+## Tests
+
+    pip install pytest && pytest        # 19 regression tests, no hardware needed
 
 ## When real data arrives
 
@@ -45,9 +60,13 @@ Delete `data/raw/*` (synthetic) once real sweeps exist.
       plots.py     single sweep, overlays, feature scatter (dark, video-ready)
       noise.py     repeatability, noise floor, class separation
       model.py     optional tiny logistic-regression classifier
+      qc.py        sweep quality control (flat / short / glitch detection)
+      report.py    self-contained HTML results summary
     cli.py         command-line front end
+    capture.py     ESP32 serial -> format-correct CSV (needs pyserial + hardware)
+    tests/         pytest regression suite
     data/raw/      per-sweep CSVs land here   (+ optional manifest.csv)
-    data/out/      generated tables and figures
+    data/out/      generated tables, figures, report.html
 
 ## Notes for fall
 

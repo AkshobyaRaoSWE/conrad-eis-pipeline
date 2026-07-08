@@ -1,0 +1,135 @@
+"""One-page HTML summary of a run -- the Week 6 'summer results' artifact.
+
+Self-contained (figures embedded as base64), dark and minimal so it drops straight
+into the fall write-up / website. No external assets, opens offline in any browser.
+"""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+
+import pandas as pd
+
+from .features import feature_table
+from .noise import noise_summary, repeatability, separation
+from .plots import overlay, feature_scatter
+
+_CSS = """
+:root{--bg:#0b0d10;--panel:#111418;--line:#23272d;--fg:#e6e8ea;--dim:#9aa0a6;--accent:#6ee7ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding:48px 24px 80px}
+h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0 0 4px}
+.sub{color:var(--dim);margin:0 0 36px;font-size:13px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);
+font-weight:600;margin:40px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+padding:16px 18px;min-width:130px}
+.stat .n{font-size:24px;font-weight:600}.stat .l{color:var(--dim);font-size:12px;margin-top:2px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+td.num{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+img{max-width:100%;border:1px solid var(--line);border-radius:10px;margin-top:8px;display:block}
+.pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px}
+.ok{color:#34d399}.warn{color:#fbbf24}.err{color:#f87171}
+.foot{color:var(--dim);font-size:12px;margin-top:48px;border-top:1px solid var(--line);padding-top:16px}
+"""
+
+
+def _img(path: Path) -> str:
+    b64 = base64.b64encode(Path(path).read_bytes()).decode()
+    return f'<img src="data:image/png;base64,{b64}" alt="{Path(path).stem}">'
+
+
+def _table(df: pd.DataFrame, num_cols=()) -> str:
+    head = "".join(f"<th>{c}</th>" for c in df.columns)
+    rows = []
+    for _, r in df.iterrows():
+        cells = "".join(
+            f'<td class="num">{r[c]:.3g}</td>' if c in num_cols and isinstance(r[c], (int, float))
+            else f"<td>{r[c]}</td>" for c in df.columns)
+        rows.append(f"<tr>{cells}</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+
+
+def build_report(master: pd.DataFrame, out_dir, qc: pd.DataFrame | None = None,
+                 title: str = "EIS prototype — summer results") -> Path:
+    """Render figures + tables into one self-contained HTML file. Returns its path."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    feats = feature_table(master)
+
+    # figures
+    ov_mag = overlay(master, out_dir / "_r_overlay_mag.png", value="magnitude")
+    ov_ph = overlay(master, out_dir / "_r_overlay_phase.png", value="phase_deg")
+    sc = feature_scatter(feats, out_dir / "_r_scatter.png", x="mag_20000", y="phase_peak")
+
+    # stats
+    n_sweeps = master["file"].nunique()
+    counts = feats["label"].value_counts()
+    noise = noise_summary(repeatability(master))
+
+    # separation matrix: every label vs "control" on the best (lowest-noise) feature
+    best_feat = noise.iloc[0]["feature"] if not noise.empty else "phase_peak"
+    sep_rows = []
+    if "control" in set(feats["label"]):
+        for lab in [l for l in counts.index if l != "control"]:
+            s = separation(master, best_feat, "control", lab)
+            sep_rows.append({"vs control": lab, "feature": best_feat,
+                             "noise-widths": round(s["separation"], 2)})
+    sep_df = pd.DataFrame(sep_rows)
+
+    # QC block
+    if qc is None or qc.empty:
+        qc_html = '<span class="pill ok">● all sweeps passed QC</span>'
+    else:
+        qc_html = _table(qc)
+
+    stats = "".join(
+        f'<div class="stat"><div class="n">{v}</div><div class="l">{k}</div></div>'
+        for k, v in [("sweeps", n_sweeps), ("classes", feats["label"].nunique()),
+                     ("frequencies", master.groupby("file").size().iloc[0]),
+                     ("median CV%", f'{noise["median_cv_pct"].median():.1f}' if not noise.empty else "—")])
+
+    counts_df = counts.rename_axis("label").reset_index(name="sweeps")
+
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title><style>{_CSS}</style></head><body><div class="wrap">
+<h1>{title}</h1>
+<p class="sub">Electrochemical impedance fingerprinting &middot; proof-of-concept run &middot; generated by the pipeline</p>
+
+<div class="row">{stats}</div>
+
+<h2>Samples measured</h2>
+{_table(counts_df)}
+
+<h2>Do the samples separate?</h2>
+{_img(ov_mag)}
+{_img(ov_ph)}
+{_img(sc)}
+
+<h2>Class separation (higher = more distinguishable)</h2>
+{_table(sep_df, num_cols=["noise-widths"]) if not sep_df.empty else "<p class='sub'>Need a control class to compute separation.</p>"}
+<p class="sub">Separation = |mean difference| / pooled noise. Above ~2 noise-widths is cleanly distinguishable.</p>
+
+<h2>Repeatability (noise floor)</h2>
+{_table(noise, num_cols=["median_cv_pct", "max_cv_pct"])}
+<p class="sub">Median coefficient of variation across repeats. Lower = more trustworthy rig. A real signal must exceed this.</p>
+
+<h2>Quality control</h2>
+{qc_html}
+
+<p class="foot">Conrad Challenge &middot; software &amp; data lane. Figures are the raw ones the fall video/website can reuse.
+Synthetic data is scaffolding and makes no claim about real water.</p>
+</div></body></html>"""
+
+    # clean up the temp figures used only for embedding
+    out = out_dir / "report.html"
+    out.write_text(html)
+    for p in (ov_mag, ov_ph, sc):
+        Path(p).unlink(missing_ok=True)
+    return out
