@@ -8,6 +8,7 @@ pipeline never touches parsing.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +30,8 @@ META_COLS = [
 def _parse_header(path: Path) -> dict:
     """Pull `# key: value` lines from the top of a file into a dict."""
     meta = {}
-    with path.open() as fh:
+    # utf-8-sig so a leading BOM doesn't hide the first '#' header line.
+    with path.open(encoding="utf-8-sig") as fh:
         for line in fh:
             s = line.strip()
             if not s:
@@ -60,12 +62,25 @@ def _parse_filename(path: Path) -> dict:
 
 
 def _derive(df: pd.DataFrame, gain_factor: float | None) -> pd.DataFrame:
-    """Add magnitude / phase / impedance columns from real & imag if absent."""
+    """Add magnitude / phase / impedance columns from real & imag if absent.
+
+    Requires either (real & imag) or the already-computed column. Missing inputs
+    raise a clear ValueError instead of a cryptic KeyError deep in the math.
+    """
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
+    if "frequency_hz" not in df.columns:
+        raise ValueError("missing required column 'frequency_hz'")
+    have_ri = {"real", "imag"} <= set(df.columns)
     if "magnitude" not in df.columns:
+        if not have_ri:
+            raise ValueError("need 'real' & 'imag' columns to derive 'magnitude' "
+                             "(or provide a 'magnitude' column)")
         df["magnitude"] = np.hypot(df["real"], df["imag"])
     if "phase_deg" not in df.columns:
+        if not have_ri:
+            raise ValueError("need 'real' & 'imag' columns to derive 'phase_deg' "
+                             "(or provide a 'phase_deg' column)")
         df["phase_deg"] = np.degrees(np.arctan2(df["imag"], df["real"]))
     if "impedance_ohm" not in df.columns and gain_factor:
         # |Z| = 1 / (gain_factor * magnitude); guard against zero magnitude.
@@ -90,7 +105,12 @@ def read_sweep(path, manifest: dict | None = None, gain_factor: float | None = N
         gain_factor = float(header.pop("gain_factor"))
     meta.update(header)  # header wins
 
-    data = pd.read_csv(path, comment="#")
+    # Normalize repeat to a single type regardless of source (filename/manifest give
+    # int, a header gives str) so groupby/filter never splits identical repeats.
+    if str(meta.get("repeat", "")).strip().isdigit():
+        meta["repeat"] = int(meta["repeat"])
+
+    data = pd.read_csv(path, comment="#", encoding="utf-8-sig")
     data = _derive(data, gain_factor)
 
     for col in META_COLS:
@@ -124,12 +144,21 @@ def ingest_folder(folder, gain_factor: float | None = None) -> pd.DataFrame:
     """
     folder = Path(folder)
     manifest = _load_manifest(folder)
-    frames = []
+    frames, skipped = [], []
     for path in sorted(folder.glob("*.csv")):
         if path.name == "manifest.csv":
             continue
-        frames.append(read_sweep(path, manifest.get(path.name), gain_factor))
+        try:
+            frames.append(read_sweep(path, manifest.get(path.name), gain_factor))
+        except Exception as exc:
+            # One malformed file must not sink the whole batch (shared folder,
+            # five people). Skip it, but say so loudly so it's never lost silently.
+            skipped.append((path.name, str(exc)))
+    for name, why in skipped:
+        print(f"[ingest] skipped {name}: {why}", file=sys.stderr)
     if not frames:
+        if skipped:
+            raise ValueError(f"No readable sweeps in {folder}; "
+                             f"{len(skipped)} file(s) failed to parse")
         raise FileNotFoundError(f"No sweep CSVs found in {folder}")
-    table = pd.concat(frames, ignore_index=True)
-    return table
+    return pd.concat(frames, ignore_index=True)

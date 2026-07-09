@@ -27,11 +27,22 @@ def clean_vs_dirty(feat_table: pd.DataFrame, dirty_labels=("yeast",),
     cols = feature_columns(feat_table)
     df = feat_table.copy()
     df = df[df["label"].isin(list(dirty_labels) + list(clean_labels))]
+    # drop features that are NaN for any sample (e.g. a frequency a short sweep lacks)
+    X_full = df[cols]
+    cols = [c for c in cols if X_full[c].notna().all()]
     y = df["label"].isin(dirty_labels).astype(int).to_numpy()  # 1 = dirty
     X = df[cols].to_numpy(dtype=float)
 
     if len(np.unique(y)) < 2:
         raise ValueError("Need both clean and dirty samples to classify.")
+    # leave-one-out removes one row per fold; a class with only 1 sample leaves a
+    # single-class training fold and LogisticRegression.fit raises. Require >=2 each.
+    counts = np.bincount(y)
+    if counts.min() < 2:
+        raise ValueError("Need at least 2 samples per class for leave-one-out CV "
+                         f"(have clean={counts[0]}, dirty={counts[1]}).")
+    if not cols:
+        raise ValueError("No usable (non-NaN) features to classify on.")
 
     clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
     pred = cross_val_predict(clf, X, y, cv=LeaveOneOut())

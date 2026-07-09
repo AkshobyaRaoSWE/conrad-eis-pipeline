@@ -40,6 +40,34 @@ def list_ports_cmd():
         print(f"{p.device}\t{p.description}")
 
 
+def parse_stream(lines):
+    """Parse an iterable of raw serial lines into [(freq, real, imag), ...].
+
+    Pure (no hardware) so it's unit-testable. Skips boot/log chatter, a
+    `frequency,...` header, and blank lines; stops on an exact `END` token (never a
+    substring like 'sending' / 'legend' / 'ended', which would truncate a sweep).
+    """
+    rows, started = [], False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if started and line.upper() == "END":
+            break
+        if line.lower().startswith("frequency"):  # firmware header line
+            started = True
+            continue
+        parts = line.split(",")
+        if len(parts) >= 3:
+            try:
+                f, re_, im_ = float(parts[0]), float(parts[1]), float(parts[2])
+                rows.append((int(f), re_, im_))
+                started = True
+            except ValueError:
+                continue  # noise / boot log line, skip
+    return rows
+
+
 def capture(port, baud, label, conc, rep, additives, out_dir=RAW, timeout=30):
     """Read one sweep from `port` and write data/raw/<label>_<conc>_<rep>.csv."""
     serial, _ = _require_serial()
@@ -48,30 +76,15 @@ def capture(port, baud, label, conc, rep, additives, out_dir=RAW, timeout=30):
     fname = f"{label}_{conc}_{int(rep):02d}.csv"
     path = out_dir / fname
 
-    rows, started = [], False
-    with serial.Serial(port, baud, timeout=timeout) as ser:
-        print(f"listening on {port} @ {baud} ... (waiting for sweep)")
-        while True:
-            raw = ser.readline()
-            if not raw:  # timeout
-                break
-            line = raw.decode(errors="replace").strip()
-            if not line:
-                continue
-            low = line.lower()
-            if "end" in low and started:
-                break
-            if low.startswith("frequency"):  # firmware header line
-                started = True
-                continue
-            parts = line.split(",")
-            if len(parts) >= 3:
-                try:
-                    f, re_, im_ = float(parts[0]), float(parts[1]), float(parts[2])
-                    rows.append((int(f), re_, im_))
-                    started = True
-                except ValueError:
-                    continue  # noise / boot log line, skip
+    def _lines():
+        with serial.Serial(port, baud, timeout=timeout) as ser:
+            print(f"listening on {port} @ {baud} ... (waiting for sweep)")
+            while True:
+                raw = ser.readline()
+                if not raw:  # timeout
+                    return
+                yield raw.decode(errors="replace")
+    rows = parse_stream(_lines())
 
     if not rows:
         sys.exit("no sweep data received (check firmware is running and printing CSV)")

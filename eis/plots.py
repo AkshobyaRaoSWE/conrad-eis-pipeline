@@ -38,8 +38,20 @@ def _style():
     })
 
 
-def _color(label: str, i: int) -> str:
-    return CLASS_COLORS.get(str(label), _FALLBACK[i % len(_FALLBACK)])
+def _color_map(labels) -> dict:
+    """Stable one-color-per-class map: known classes fixed, unknowns from the fallback
+    palette in first-seen order (so the same class is always the same color)."""
+    cmap, k = {}, 0
+    for lab in labels:
+        lab = str(lab)
+        if lab in cmap:
+            continue
+        if lab in CLASS_COLORS:
+            cmap[lab] = CLASS_COLORS[lab]
+        else:
+            cmap[lab] = _FALLBACK[k % len(_FALLBACK)]
+            k += 1
+    return cmap
 
 
 def plot_sweep(sweep, out_path, title: str | None = None):
@@ -67,13 +79,13 @@ def overlay(master, out_path, value: str = "magnitude", by: str = "label"):
     """Overlay every sweep colored by class. This is the eyeball separation test."""
     _style()
     fig, ax = plt.subplots(figsize=(8, 5))
+    cmap = _color_map(master[by])
     seen = {}
     # per-sweep = per-file (unique); sample_id may collide across files.
-    for i, (fname, grp) in enumerate(master.groupby("file", sort=False)):
+    for fname, grp in master.groupby("file", sort=False):
         g = grp.sort_values("frequency_hz")
         cls = str(g[by].iloc[0])
-        color = _color(cls, i)
-        ax.semilogx(g["frequency_hz"], g[value], color=color, lw=1.3, alpha=0.85,
+        ax.semilogx(g["frequency_hz"], g[value], color=cmap[cls], lw=1.3, alpha=0.85,
                     label=cls if cls not in seen else None)
         seen[cls] = True
     ax.set_xlabel("frequency (Hz)")
@@ -92,8 +104,9 @@ def feature_scatter(feat_table, out_path, x: str, y: str, by: str = "label"):
     """2-D feature scatter -- do the classes form separate clouds?"""
     _style()
     fig, ax = plt.subplots(figsize=(6.5, 5.5))
-    for i, (cls, grp) in enumerate(feat_table.groupby(by, sort=False)):
-        ax.scatter(grp[x], grp[y], s=70, color=_color(str(cls), i),
+    cmap = _color_map(feat_table[by])
+    for cls, grp in feat_table.groupby(by, sort=False):
+        ax.scatter(grp[x], grp[y], s=70, color=cmap[str(cls)],
                    edgecolor="#0b0d10", lw=0.5, label=str(cls))
     ax.set_xlabel(x)
     ax.set_ylabel(y)

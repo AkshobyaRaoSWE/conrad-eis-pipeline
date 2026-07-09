@@ -18,8 +18,14 @@ from .io import META_COLS
 KEY_FREQS = [1_000, 5_000, 20_000, 50_000, 100_000]
 
 
-def _nearest(freqs: np.ndarray, target: float) -> int:
-    return int(np.argmin(np.abs(freqs - target)))
+def _nearest(freqs: np.ndarray, target: float, tol: float = 0.5):
+    """Index of the closest frequency, or None if the closest is > tol*target away.
+
+    Stops a coarse/short sweep from silently reporting a feature at 100 kHz using a
+    point at 10 kHz (or collapsing several KEY_FREQS onto one point) -> NaN instead.
+    """
+    i = int(np.argmin(np.abs(freqs - target)))
+    return i if abs(freqs[i] - target) <= tol * target else None
 
 
 def sweep_features(sweep: pd.DataFrame) -> dict:
@@ -32,8 +38,8 @@ def sweep_features(sweep: pd.DataFrame) -> dict:
     feats = {}
     for tf in KEY_FREQS:
         i = _nearest(f, tf)
-        feats[f"mag_{tf}"] = mag[i]
-        feats[f"phase_{tf}"] = ph[i]
+        feats[f"mag_{tf}"] = mag[i] if i is not None else np.nan
+        feats[f"phase_{tf}"] = ph[i] if i is not None else np.nan
 
     # whole-sweep summaries
     feats["mag_min"] = mag.min()

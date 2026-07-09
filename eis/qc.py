@@ -60,11 +60,17 @@ def validate_sweep(sweep: pd.DataFrame) -> list[Issue]:
             issues.append(Issue("warn", "flat",
                                 f"magnitude nearly constant (CV={cv:.3f}); open circuit / no sample?"))
 
-    # single-point spikes (loose connection glitch)
-    if finite.size >= 3:
-        med = np.median(np.abs(np.diff(finite)))
-        if med > 0 and np.max(np.abs(np.diff(finite))) > SPIKE_JUMP * med * 4:
-            issues.append(Issue("warn", "spike", "large single-point jump (glitch / loose wire?)"))
+    # single-point spikes (loose connection glitch). Compare each interior point to
+    # the median of its 3-point neighborhood: that residual is 0 on any monotone
+    # sweep (however steep), so a steep-but-clean EIS curve never trips this -- only
+    # a point that jumps away from BOTH neighbors does.
+    if finite.size >= 5:
+        m = finite
+        med3 = np.median(np.vstack([m[:-2], m[1:-1], m[2:]]), axis=0)
+        resid = np.abs(m[1:-1] - med3)
+        step = np.median(np.abs(np.diff(m)))
+        if step > 0 and resid.max() > SPIKE_JUMP * step:
+            issues.append(Issue("warn", "spike", "single-point jump off the local trend (glitch / loose wire?)"))
 
     return issues
 

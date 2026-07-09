@@ -39,6 +39,14 @@ img{max-width:100%;border:1px solid var(--line);border-radius:10px;margin-top:8p
 """
 
 
+def _median_mag_cv(noise: pd.DataFrame) -> str:
+    """Median CV% over the ratio-scale (percent) features only -- one honest number."""
+    if noise.empty:
+        return "—"
+    pct = noise[noise["unit"] == "%"]["median_spread"]
+    return f"{pct.median():.1f}" if len(pct) else "—"
+
+
 def _img(path: Path) -> str:
     b64 = base64.b64encode(Path(path).read_bytes()).decode()
     return f'<img src="data:image/png;base64,{b64}" alt="{Path(path).stem}">'
@@ -72,14 +80,20 @@ def build_report(master: pd.DataFrame, out_dir, qc: pd.DataFrame | None = None,
     counts = feats["label"].value_counts()
     noise = noise_summary(repeatability(master))
 
-    # separation matrix: every label vs "control" on the best (lowest-noise) feature
-    best_feat = noise.iloc[0]["feature"] if not noise.empty else "phase_peak"
+    # separation table: each label vs control on the feature that best separates it
+    # (max Cohen's d), so we report the strongest honest discriminator per class.
+    from .features import feature_columns
+    feat_cols = feature_columns(feats)
     sep_rows = []
     if "control" in set(feats["label"]):
         for lab in [l for l in counts.index if l != "control"]:
-            s = separation(master, best_feat, "control", lab)
-            sep_rows.append({"vs control": lab, "feature": best_feat,
-                             "noise-widths": round(s["separation"], 2)})
+            best = max(
+                (separation(master, fc, "control", lab) for fc in feat_cols),
+                key=lambda s: (s["separation"] if s["separation"] == s["separation"] else -1),
+            )
+            d = best["separation"]
+            sep_rows.append({"vs control": lab, "best feature": best["feature"],
+                             "Cohen's d": round(d, 2) if d == d else float("nan")})
     sep_df = pd.DataFrame(sep_rows)
 
     # QC block
@@ -92,7 +106,7 @@ def build_report(master: pd.DataFrame, out_dir, qc: pd.DataFrame | None = None,
         f'<div class="stat"><div class="n">{v}</div><div class="l">{k}</div></div>'
         for k, v in [("sweeps", n_sweeps), ("classes", feats["label"].nunique()),
                      ("frequencies", master.groupby("file").size().iloc[0]),
-                     ("median CV%", f'{noise["median_cv_pct"].median():.1f}' if not noise.empty else "—")])
+                     ("median mag CV%", _median_mag_cv(noise))])
 
     counts_df = counts.rename_axis("label").reset_index(name="sweeps")
 
@@ -113,12 +127,12 @@ def build_report(master: pd.DataFrame, out_dir, qc: pd.DataFrame | None = None,
 {_img(sc)}
 
 <h2>Class separation (higher = more distinguishable)</h2>
-{_table(sep_df, num_cols=["noise-widths"]) if not sep_df.empty else "<p class='sub'>Need a control class to compute separation.</p>"}
-<p class="sub">Separation = |mean difference| / pooled noise. Above ~2 noise-widths is cleanly distinguishable.</p>
+{_table(sep_df, num_cols=["Cohen's d"]) if not sep_df.empty else "<p class='sub'>Need a control class to compute separation.</p>"}
+<p class="sub">Cohen's d = |mean difference| / pooled within-class SD, on the best-separating feature per class. Above ~2 = cleanly distinguishable above the noise.</p>
 
 <h2>Repeatability (noise floor)</h2>
-{_table(noise, num_cols=["median_cv_pct", "max_cv_pct"])}
-<p class="sub">Median coefficient of variation across repeats. Lower = more trustworthy rig. A real signal must exceed this.</p>
+{_table(noise, num_cols=["median_spread", "max_spread"])}
+<p class="sub">Spread across repeats: CV% for magnitude features, absolute std in degrees for phase. Lower = more trustworthy rig. A real signal must exceed this.</p>
 
 <h2>Quality control</h2>
 {qc_html}

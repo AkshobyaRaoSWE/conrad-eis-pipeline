@@ -44,7 +44,7 @@ def test_gain_factor_to_ohms_and_zero_guard(tmp_path):
 
 def test_missing_columns_raise(tmp_path):
     write(tmp_path, "bad.csv", "frequency_hz,foo\n1000,5\n")
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="real.*imag"):     # clear error, not cryptic KeyError
         eis.read_sweep(tmp_path / "bad.csv")
 
 
@@ -92,6 +92,46 @@ def test_empty_folder_raises(tmp_path):
         eis.ingest_folder(tmp_path)
 
 
+def test_one_bad_file_does_not_sink_batch(tmp_path):
+    synth.write_dataset(tmp_path, repeats=2)                # 12 good sweeps
+    (tmp_path / "oops_na_01.csv").write_text("frequency_hz,magnitude\n1000,500\n2000,400\n")
+    m = eis.ingest_folder(tmp_path)                         # must not raise
+    assert m["file"].nunique() == 12                        # good ones survive
+    assert "oops_na_01.csv" not in set(m["file"])           # bad one skipped
+
+
+def test_magnitude_only_gives_clear_error(tmp_path):
+    write(tmp_path, "m.csv", "frequency_hz,magnitude\n1000,500\n2000,400\n")
+    with pytest.raises(ValueError, match="real.*imag"):
+        eis.read_sweep(tmp_path / "m.csv")
+
+
+def test_magnitude_and_phase_only_ok(tmp_path):
+    write(tmp_path, "mp_na_01.csv", "frequency_hz,magnitude,phase_deg\n1000,500,-30\n2000,400,-20\n")
+    s = eis.read_sweep(tmp_path / "mp_na_01.csv")
+    assert s["magnitude"].iloc[0] == 500 and s["phase_deg"].iloc[0] == -30
+
+
+def test_all_bad_folder_raises_value_error(tmp_path):
+    write(tmp_path, "x.csv", "frequency_hz,magnitude\n1000,500\n")
+    with pytest.raises(ValueError):
+        eis.ingest_folder(tmp_path)
+
+
+def test_impedance_numeric_exact(tmp_path):
+    write(tmp_path, "a_na_01.csv", "frequency_hz,real,imag\n1000,3,-4\n2000,3,-4\n")
+    s = eis.read_sweep(tmp_path / "a_na_01.csv", gain_factor=2e-3)
+    assert abs(s["magnitude"].iloc[0] - 5.0) < 1e-12
+    assert abs(s["phase_deg"].iloc[0] - (-53.13010235)) < 1e-6
+    assert abs(s["impedance_ohm"].iloc[0] - 100.0) < 1e-9   # 1/(2e-3*5)
+
+
+def test_bom_column_resolves(tmp_path):
+    (tmp_path / "b_na_01.csv").write_bytes("﻿frequency_hz,real,imag\n1000,3,4\n2000,6,8\n".encode())
+    s = eis.read_sweep(tmp_path / "b_na_01.csv")
+    assert abs(s["magnitude"].iloc[0] - 5.0) < 1e-12         # column survived BOM
+
+
 # ---------- the bug that bit us: id collision must not merge sweeps ----------
 
 def test_duplicate_sample_id_not_merged(tmp_path):
@@ -112,10 +152,12 @@ def test_feature_table_one_row_per_sweep(tmp_path):
         assert col in ft.columns
 
 
-def test_features_on_short_sweep(tmp_path):
+def test_short_sweep_features_are_nan_not_extrapolated(tmp_path):
+    # 2-point sweep near 1-2 kHz: 100 kHz is out of range -> NaN, not a false value
     write(tmp_path, "s_na_01.csv", "frequency_hz,real,imag\n1000,3,4\n2000,6,8\n")
     ft = eis.feature_table(eis.ingest_folder(tmp_path))
-    assert np.isfinite(ft["mag_100000"].iloc[0])           # nearest-freq fallback
+    assert np.isnan(ft["mag_100000"].iloc[0])              # no silent extrapolation
+    assert np.isfinite(ft["mag_1000"].iloc[0])             # in-range feature still real
 
 
 # ---------- QC ----------
@@ -141,9 +183,32 @@ def test_repeatability_and_separation(tmp_path):
     synth.write_dataset(tmp_path, repeats=3)
     m = eis.ingest_folder(tmp_path)
     rep = eis.repeatability(m)
-    assert not rep.empty and (rep["cv_pct"] >= 0).all()
-    sep = eis.separation(m, "phase_peak", "control", "yeast")
+    assert not rep.empty and (rep["spread"].dropna() >= 0).all()
+    # phase features carry a degree unit, magnitude features a percent unit
+    assert set(rep["unit"]) <= {"%", "deg"}
+    sep = eis.separation(m, "mag_20000", "control", "yeast")
     assert sep["separation"] >= 0
+
+
+def test_separation_cohens_d_matches_manual(tmp_path):
+    # ground-truth Cohen's d on a tiny hand-built table
+    synth.write_dataset(tmp_path, repeats=3)
+    m = eis.ingest_folder(tmp_path)
+    ft = eis.feature_table(m)
+    a = ft.loc[ft.label == "control", "mag_20000"].to_numpy(float)
+    b = ft.loc[ft.label == "salt", "mag_20000"].to_numpy(float)
+    na, nb = len(a), len(b)
+    pooled = np.sqrt(((na-1)*a.var(ddof=1) + (nb-1)*b.var(ddof=1)) / (na+nb-2))
+    want = abs(a.mean() - b.mean()) / pooled
+    got = eis.separation(m, "mag_20000", "control", "salt")["separation"]
+    assert abs(got - want) < 1e-9
+
+
+def test_separation_nan_when_class_has_one_sample(tmp_path):
+    synth.write_dataset(tmp_path, repeats=1)               # 1 control, 1 salt, ...
+    m = eis.ingest_folder(tmp_path)
+    sep = eis.separation(m, "mag_20000", "control", "salt")
+    assert np.isnan(sep["separation"])                     # undefined spread -> NaN, not inf
 
 
 # ---------- model ----------
@@ -165,6 +230,55 @@ def test_model_single_class_raises(tmp_path):
 
 
 # ---------- report ----------
+
+def test_bom_header_still_labels(tmp_path):
+    # BOM before the first '#' must not hide the authoritative header
+    (tmp_path / "x_na_01.csv").write_bytes(
+        "﻿# label: yeast\n# gain_factor: 2e-3\nfrequency_hz,real,imag\n1000,3,4\n2000,6,8\n".encode())
+    s = eis.read_sweep(tmp_path / "x_na_01.csv")
+    assert s["label"].iloc[0] == "yeast"                    # header won, not filename 'x'
+    assert "impedance_ohm" in s.columns                     # gain_factor from header applied
+
+
+def test_repeat_type_consistent_across_sources(tmp_path):
+    write(tmp_path, "yeast_med_02.csv", "frequency_hz,real,imag\n1000,3,4\n2000,6,8\n")
+    write(tmp_path, "hdr.csv", "# label: yeast\n# repeat: 2\nfrequency_hz,real,imag\n1000,3,4\n2000,6,8\n")
+    m = eis.ingest_folder(tmp_path)
+    reps = m.groupby("file")["repeat"].first()
+    assert all(isinstance(v, (int, np.integer)) for v in reps)   # int from both sources
+    assert (reps == 2).all()
+
+
+def test_qc_spike_detects_glitch_not_steep_sweep(tmp_path):
+    from eis.qc import validate_sweep
+    # steep-but-clean monotone sweep -> NO spike flag
+    synth.write_dataset(tmp_path, repeats=1)
+    clean = eis.read_sweep(next(tmp_path.glob("control_*.csv")))
+    assert not any(i.code == "spike" for i in validate_sweep(clean))
+    # inject a single-point glitch -> flagged
+    glitch = clean.copy()
+    glitch.loc[glitch.index[5], "magnitude"] *= 8
+    assert any(i.code == "spike" for i in validate_sweep(glitch))
+
+
+def test_capture_parse_stream_end_token():
+    from capture import parse_stream
+    # 'ended' / 'sending' are NOT the END token: no truncation
+    lines = ["boot ok", "frequency_hz,real,imag", "1000,3,4",
+             "calibration ended", "2000,6,8", "sending done", "3000,9,12", "END", "4000,1,1"]
+    rows = parse_stream(lines)
+    assert rows == [(1000, 3.0, 4.0), (2000, 6.0, 8.0), (3000, 9.0, 12.0)]  # stops at END only
+
+
+def test_model_single_dirty_sample_clear_error(tmp_path):
+    # 2 controls, 1 yeast -> LOO would crash; must raise a clear error instead
+    for i in (1, 2):
+        write(tmp_path, f"control_na_0{i}.csv", "frequency_hz,real,imag\n1000,3,4\n2000,6,8\n1500,4,5\n")
+    write(tmp_path, "yeast_med_01.csv", "frequency_hz,real,imag\n1000,9,4\n2000,2,8\n1500,7,5\n")
+    ft = eis.feature_table(eis.ingest_folder(tmp_path))
+    with pytest.raises(ValueError, match="2 samples per class"):
+        eis.clean_vs_dirty(ft)
+
 
 def test_report_builds(tmp_path):
     synth.write_dataset(tmp_path, repeats=2)

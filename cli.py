@@ -105,15 +105,15 @@ def cmd_noise(args):
     summ = eis.noise_summary(rep)
     OUT.mkdir(parents=True, exist_ok=True)
     rep.to_csv(OUT / "repeatability.csv", index=False)
-    print("noise floor (median CV% per feature, best first):")
+    print("noise floor per feature (mag = CV%, phase = std in deg; best first):")
     with pd.option_context("display.max_rows", None):
         print(summ.to_string(index=False))
-    # headline separation: clean control vs yeast on a strong feature
+    # headline separation: clean control vs yeast on a strong feature (Cohen's d)
     labels = set(master["label"])
     if {"control", "yeast"} <= labels:
         sep = eis.separation(master, "phase_peak", "control", "yeast")
-        print(f"\ncontrol vs yeast on phase_peak: "
-              f"{sep['separation']:.1f} noise-widths apart")
+        print(f"\ncontrol vs yeast on phase_peak: Cohen's d = "
+              f"{sep['separation']:.1f} (noise-widths apart)")
 
 
 def cmd_model(args):
