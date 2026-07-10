@@ -211,6 +211,55 @@ def test_separation_nan_when_class_has_one_sample(tmp_path):
     assert np.isnan(sep["separation"])                     # undefined spread -> NaN, not inf
 
 
+def _constant_master(tmp_path, files):
+    # files: {name: mag_constant}; builds flat sweeps so a feature is constant per class
+    for name, val in files.items():
+        rows = "".join(f"{f},{val},0\n" for f in range(1000, 6000, 1000))
+        (tmp_path / name).write_text("frequency_hz,real,imag\n" + rows)
+    return eis.ingest_folder(tmp_path)
+
+
+def test_separation_equal_constant_classes_is_nan_not_inf(tmp_path):
+    # both classes identical constants -> no separation (NaN), must NOT be inf
+    m = _constant_master(tmp_path, {"a_na_01.csv": 5, "a_na_02.csv": 5,
+                                    "b_na_01.csv": 5, "b_na_02.csv": 5})
+    sep = eis.separation(m, "mag_1000", "a", "b")
+    assert np.isnan(sep["separation"])
+
+
+def test_separation_different_constant_classes_is_inf(tmp_path):
+    # constant but genuinely different means -> infinite separation is correct
+    m = _constant_master(tmp_path, {"a_na_01.csv": 5, "a_na_02.csv": 5,
+                                    "b_na_01.csv": 9, "b_na_02.csv": 9})
+    sep = eis.separation(m, "mag_1000", "a", "b")
+    assert np.isinf(sep["separation"])
+
+
+def test_repeat_coercion_handles_float_string(tmp_path):
+    write(tmp_path, "scan1.csv", "frequency_hz,real,imag\n1000,3,4\n2000,6,8\n")
+    write(tmp_path, "yeast_med_02.csv", "frequency_hz,real,imag\n1000,3,4\n2000,6,8\n")
+    write(tmp_path, "manifest.csv",
+          "filename,label,concentration,repeat\nscan1.csv,yeast,med,2.0\n")   # float-like
+    m = eis.ingest_folder(tmp_path)
+    reps = m.groupby("file")["repeat"].first()
+    assert all(isinstance(v, (int, np.integer)) for v in reps)  # 2.0 -> int 2, matches filename's 2
+    assert (reps == 2).all()
+
+
+def test_ingest_reports_skipped_and_reraises_oserror(tmp_path, monkeypatch):
+    synth.write_dataset(tmp_path, repeats=1)
+    (tmp_path / "bad_na_01.csv").write_text("frequency_hz,magnitude\n1000,5\n2000,6\n")
+    m = eis.ingest_folder(tmp_path)
+    assert any(name == "bad_na_01.csv" for name, _ in m.attrs["skipped"])   # surfaced to caller
+    # a genuine OS error must propagate, not be swallowed as "malformed"
+    import eis.io as io_mod
+    def boom(*a, **k):
+        raise PermissionError("denied")
+    monkeypatch.setattr(io_mod, "read_sweep", boom)
+    with pytest.raises(PermissionError):
+        eis.ingest_folder(tmp_path)
+
+
 # ---------- model ----------
 
 def test_model_learns_synthetic(tmp_path):

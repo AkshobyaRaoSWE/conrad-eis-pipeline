@@ -105,10 +105,12 @@ def read_sweep(path, manifest: dict | None = None, gain_factor: float | None = N
         gain_factor = float(header.pop("gain_factor"))
     meta.update(header)  # header wins
 
-    # Normalize repeat to a single type regardless of source (filename/manifest give
-    # int, a header gives str) so groupby/filter never splits identical repeats.
-    if str(meta.get("repeat", "")).strip().isdigit():
-        meta["repeat"] = int(meta["repeat"])
+    # Normalize repeat to a single int regardless of source (filename/manifest give
+    # int, a header gives str, a numeric manifest cell may be "2.0") so groupby/filter
+    # never splits identical repeats.
+    rs = str(meta.get("repeat", "")).strip()
+    if re.fullmatch(r"-?\d+(\.0+)?", rs):
+        meta["repeat"] = int(float(rs))
 
     data = pd.read_csv(path, comment="#", encoding="utf-8-sig")
     data = _derive(data, gain_factor)
@@ -150,9 +152,13 @@ def ingest_folder(folder, gain_factor: float | None = None) -> pd.DataFrame:
             continue
         try:
             frames.append(read_sweep(path, manifest.get(path.name), gain_factor))
+        except (OSError, PermissionError):
+            # A real I/O problem (unreadable/permission) is not a bad-data case --
+            # surface it rather than pretend the file was just malformed.
+            raise
         except Exception as exc:
-            # One malformed file must not sink the whole batch (shared folder,
-            # five people). Skip it, but say so loudly so it's never lost silently.
+            # One malformed CSV must not sink the whole batch (shared folder, five
+            # people). Skip it, but record + report it so it's never lost silently.
             skipped.append((path.name, str(exc)))
     for name, why in skipped:
         print(f"[ingest] skipped {name}: {why}", file=sys.stderr)
@@ -161,4 +167,6 @@ def ingest_folder(folder, gain_factor: float | None = None) -> pd.DataFrame:
             raise ValueError(f"No readable sweeps in {folder}; "
                              f"{len(skipped)} file(s) failed to parse")
         raise FileNotFoundError(f"No sweep CSVs found in {folder}")
-    return pd.concat(frames, ignore_index=True)
+    table = pd.concat(frames, ignore_index=True)
+    table.attrs["skipped"] = skipped   # (filename, reason) list for programmatic callers
+    return table

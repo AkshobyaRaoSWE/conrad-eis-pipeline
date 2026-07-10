@@ -79,10 +79,17 @@ def separation(master: pd.DataFrame, feature: str, a: str, b: str,
     va = feats.loc[feats[label_col] == a, feature].to_numpy(dtype=float)
     vb = feats.loc[feats[label_col] == b, feature].to_numpy(dtype=float)
     na, nb = len(va), len(vb)
-    if na < 2 or nb < 2:
+    # need >=2 real (non-NaN) values per class for a defined spread
+    if np.sum(~np.isnan(va)) < 2 or np.sum(~np.isnan(vb)) < 2:
         return {"feature": feature, "a": a, "b": b, "separation": np.nan}
+    mean_a, mean_b = np.nanmean(va), np.nanmean(vb)
     pooled = np.sqrt(((na - 1) * np.nanvar(va, ddof=1) +
                       (nb - 1) * np.nanvar(vb, ddof=1)) / (na + nb - 2))
-    sep = abs(np.nanmean(va) - np.nanmean(vb)) / pooled if pooled else np.inf
+    if pooled == 0:
+        # both classes constant: identical means => no separation (0), not inf;
+        # different constant means => genuinely infinite separation.
+        sep = np.nan if np.isclose(mean_a, mean_b) else np.inf
+    else:
+        sep = abs(mean_a - mean_b) / pooled
     return {"feature": feature, "a": a, "b": b,
-            "mean_a": np.nanmean(va), "mean_b": np.nanmean(vb), "separation": sep}
+            "mean_a": mean_a, "mean_b": mean_b, "separation": sep}

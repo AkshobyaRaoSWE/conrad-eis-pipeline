@@ -18,14 +18,17 @@ from .io import META_COLS
 KEY_FREQS = [1_000, 5_000, 20_000, 50_000, 100_000]
 
 
-def _nearest(freqs: np.ndarray, target: float, tol: float = 0.5):
-    """Index of the closest frequency, or None if the closest is > tol*target away.
+def _nearest(freqs: np.ndarray, target: float, rel_tol: float = 0.25):
+    """Index of the closest frequency, or None if it isn't within rel_tol of target.
 
-    Stops a coarse/short sweep from silently reporting a feature at 100 kHz using a
-    point at 10 kHz (or collapsing several KEY_FREQS onto one point) -> NaN instead.
+    Relative-to-target (not grid-relative) on purpose: a feature named `mag_5000`
+    must come from a point actually near 5 kHz, so a coarse sweep with no nearby
+    point returns None -> NaN rather than silently mislabeling a far point (e.g. a
+    1 kHz reading as `mag_5000`). Consistent 25% band at every frequency; any
+    normal 1 kHz-100 kHz sweep of >=~20 points resolves all KEY_FREQS exactly.
     """
     i = int(np.argmin(np.abs(freqs - target)))
-    return i if abs(freqs[i] - target) <= tol * target else None
+    return i if abs(freqs[i] - target) <= rel_tol * target else None
 
 
 def sweep_features(sweep: pd.DataFrame) -> dict:
