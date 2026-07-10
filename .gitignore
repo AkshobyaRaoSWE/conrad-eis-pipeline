@@ -9,3 +9,8 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# firmware build artifacts
+firmware/test/test_math
+firmware/.pio/
+firmware/.pioenvs/

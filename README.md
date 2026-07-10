@@ -64,7 +64,8 @@ Delete `data/raw/*` (synthetic) once real sweeps exist.
       report.py    self-contained HTML results summary
     cli.py         command-line front end
     capture.py     ESP32 serial -> format-correct CSV (needs pyserial + hardware)
-    tests/         pytest regression suite
+    firmware/      ESP32 + AD5933 firmware (Ian's lane) + host math test
+    tests/         pytest regression suite (incl. firmware->pipeline integration)
     data/raw/      per-sweep CSVs land here   (+ optional manifest.csv)
     data/out/      generated tables, figures, report.html
 
